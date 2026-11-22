@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>로봇이 본 나 · 얼굴 없는 술래</title>
+<style>
+  :root { --bg:#fbfaf7; --ink:#1d1d1b; --quiet:#6b685f; --line:#e4e1d9; --btn:#1d1d1b; --btn2:#ebe8e1; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141413; --ink:#f1efe8; --quiet:#a8a69e; --line:#2c2c2a; --btn:#f1efe8; --btn2:#2c2c2a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif; -webkit-text-size-adjust:100%; }
+  main { max-width:480px; margin:0 auto; padding:18px 16px 32px; }
+  .kicker { font-size:13px; color:var(--quiet); margin:0; }
+  h1 { font-size:24px; margin:4px 0 14px; }
+  #card { width:100%; border-radius:16px; display:block; background:#0f1013; aspect-ratio:4/5; -webkit-touch-callout:default; }
+  .say { font-size:16px; line-height:1.55; margin:14px 2px 0; }
+    .btns { display:flex; gap:8px; margin-top:16px; }
+  .btns button, .btns a { flex:1; font:inherit; font-size:15px; font-weight:600; padding:13px 0; border-radius:12px; border:0; text-align:center; text-decoration:none; cursor:pointer; }
+  .b1 { background:var(--btn); color:var(--bg); }
+  .b2 { background:var(--btn2); color:var(--ink); }
+  .hint { font-size:12.5px; color:var(--quiet); margin:10px 2px 0; line-height:1.5; }
+  .foot { font-size:12px; color:var(--quiet); margin-top:22px; padding-top:14px; border-top:1px solid var(--line); line-height:1.6; }
+  .err { padding:40px 8px; text-align:center; color:var(--quiet); line-height:1.7; }
+</style>
+</head>
+<body>
+<main id="app">
+  <p class="kicker">얼굴 없는 술래</p>
+  <h1>로봇이 본 나</h1>
+  <img id="card" alt="로봇이 LiDAR로 본 이번 판의 그림">
+  <p class="say">제 눈은 바닥 위 18cm라서, 당신은 점 두 개로만 보였어요.</p>
+  <div class="btns"><a class="b1" id="save" download="얼굴없는술래.png">이미지 저장</a><button class="b2" id="share" type="button">공유하기</button></div>
+  <p class="hint" id="hint">아이폰은 그림을 길게 누르면 사진 앱에 저장할 수 있어요.</p>
+  <p class="foot">이 그림은 QR 주소 안에 담겨 있어요. 카메라와 마이크는 쓰지 않았고, 서버에도 저장되지 않아요.<br>2026 로보틱스 작품공모전 출품작</p>
+</main>
+<!-- 배포용(dist/viewer.html)에서는 build_viewer.py가 core.js를 이 자리에 넣는다 -->
+<script>
+/*
+ * 얼굴 없는 술래 — 기념 그림(QR) 공통 코드
+ *
+ * 한 판의 그림(다리 점이 지나간 길, 멈춘 자리, 걸린 자리, 잡은 자리)을
+ * 작은 바이트 묶음으로 줄여 주소의 # 뒤에 담는다. 서버에는 아무것도 저장하지 않는다.
+ *
+ * 브라우저(로봇의 눈 화면, 보기 페이지)와 Node(시험) 양쪽에서 쓴다. 외부 의존성 없음.
+ *
+ * 좌표: 미터, 로봇(LiDAR) 중심이 원점. x + = 로봇의 왼쪽, y + = 로봇의 정면.
+ */
+(function (root) {
+  'use strict';
+
+  var VERSION = 1;
+  var PREFIX = 'v1.';
+  var UNIT = 0.02;            // 2cm 격자
+  var EPOCH = Date.UTC(2026, 0, 1);
+  var RESULTS = ['person', 'robot', 'stop'];   // 사람 승리, 술래 승리(모두 걸림), 중단·시간 종료
+  var MARKS = { freeze: 1, caught: 2, win: 3 };
+  var MARK_NAMES = { 1: 'freeze', 2: 'caught', 3: 'win' };
+  var DEFAULT_MAX_BYTES = 520; // base64로 약 700자 → QR 버전 18 안팎(L)
+
+  // ---------- 작은 도구 ----------
+  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+  function qx(x) { return clamp(Math.round(x / UNIT), -128, 127); }
+  function qy(y) { return clamp(Math.round(y / UNIT), 0, 255); }
+  function qt(t) { return clamp(Math.round(t * 255), 0, 255); }
+  function dist(a, b) { var dx = a[0] - b[0], dy = a[1] - b[1]; return Math.sqrt(dx * dx + dy * dy); }
+  function pathLen(pts) { var s = 0; for (var i = 1; i < pts.length; i++) s += dist(pts[i - 1], pts[i]); return s; }
+
+  function dayNumber(dateStr) {
+    var p = String(dateStr).split('-');
+    return Math.round((Date.UTC(+p[0], +p[1] - 1, +p[2]) - EPOCH) / 864e5);
+  }
+  function dayString(n) {
+    return new Date(EPOCH + n * 864e5).toISOString().slice(0, 10);
+  }
+  function today() {
+    var d = new Date();
+    var m = d.getMonth() + 1, day = d.getDate();
+    return d.getFullYear() + '-' + (m < 10 ? '0' : '') + m + '-' + (day < 10 ? '0' : '') + day;
+  }
+
+  // ---------- 선 줄이기 (Ramer–Douglas–Peucker) ----------
+  function segDist(p, a, b) {
+    var dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+    if (L === 0) return dist(p, a);
+    var t = clamp(((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / L, 0, 1);
+    return dist(p, [a[0] + t * dx, a[1] + t * dy]);
+  }
+  function rdp(pts, eps) {
+    if (pts.length < 3) return pts.slice();
+    var keep = new Array(pts.length); keep[0] = keep[pts.length - 1] = true;
+    var stack = [[0, pts.length - 1]];
+    while (stack.length) {
+      var r = stack.pop(), i0 = r[0], i1 = r[1], best = -1, bi = -1;
+      for (var i = i0 + 1; i < i1; i++) { var d = segDist(pts[i], pts[i0], pts[i1]); if (d > best) { best = d; bi = i; } }
+      if (best > eps) { keep[bi] = true; stack.push([i0, bi], [bi, i1]); }
+    }
+    return pts.filter(function (_, i) { return keep[i]; });
+  }
+
+  // ---------- 바이트로 만들기 ----------
+  // [버전][날짜 u16][판 번호 u16][결과][길 개수]
+  //   길마다: [점 개수][시작 시각][끝 시각] + 점마다 [x i8][y u8]
+  // [표시 개수] + 표시마다 [종류][x i8][y u8]
+  function byteSize(data) {
+    var n = 7 + 1 + 3 * data.marks.length;
+    data.tracks.forEach(function (t) { n += 3 + 2 * t.pts.length; });
+    return n;
+  }
+
+  // 바이트 예산에 맞을 때까지 길을 줄인다. 원본은 건드리지 않는다.
+  function fit(data, maxBytes) {
+    maxBytes = maxBytes || DEFAULT_MAX_BYTES;
+    var tracks = data.tracks
+      .filter(function (t) { return t.pts.length >= 2 && pathLen(t.pts) >= 0.10; })   // 10cm 안 되는 떨림은 버림
+      .map(function (t) { return { t0: t.t0, t1: t.t1, pts: t.pts }; });
+    var marks = data.marks.slice(0, 255);
+    var out = { v: VERSION, date: data.date, round: data.round, result: data.result, tracks: tracks, marks: marks };
+    var eps = 0.01;
+    for (var k = 0; k < 12; k++) {
+      out.tracks = tracks.map(function (t) {
+        var p = rdp(t.pts, eps);
+        if (p.length > 255) { var step = p.length / 255; p = p.filter(function (_, i) { return Math.floor(i % step) === 0; }).slice(0, 255); }
+        return { t0: t.t0, t1: t.t1, pts: p };
+      }).filter(function (t) { return t.pts.length >= 2; });
+      if (byteSize(out) <= maxBytes) return out;
+      eps *= 1.6;
+    }
+    // 그래도 넘치면 짧은 길부터 버린다
+    out.tracks.sort(function (a, b) { return pathLen(b.pts) - pathLen(a.pts); });
+    while (out.tracks.length && byteSize(out) > maxBytes) out.tracks.pop();
+    out.tracks.sort(function (a, b) { return a.t0 - b.t0; });
+    return out;
+  }
+
+  function encode(data) {
+    var b = [];
+    var day = dayNumber(data.date || today());
+    var round = clamp(data.round | 0, 0, 65535);
+    var res = Math.max(0, RESULTS.indexOf(data.result));
+    b.push(VERSION, (day >> 8) & 255, day & 255, (round >> 8) & 255, round & 255, res, Math.min(data.tracks.length, 255));
+    data.tracks.slice(0, 255).forEach(function (t) {
+      var pts = t.pts.slice(0, 255);
+      b.push(pts.length, qt(t.t0), qt(t.t1));
+      pts.forEach(function (p) { b.push(qx(p[0]) & 255, qy(p[1])); });
+    });
+    var marks = data.marks.slice(0, 255);
+    b.push(marks.length);
+    marks.forEach(function (m) { b.push(MARKS[m.type] || 1, qx(m.x) & 255, qy(m.y)); });
+    return new Uint8Array(b);
+  }
+
+  function decode(bytes) {
+    var i = 0;
+    function u8() { if (i >= bytes.length) throw new Error('짧은 데이터'); return bytes[i++]; }
+    function i8() { var v = u8(); return v > 127 ? v - 256 : v; }
+    if (u8() !== VERSION) throw new Error('모르는 버전');
+    var day = (u8() << 8) | u8();
+    var round = (u8() << 8) | u8();
+    var result = RESULTS[u8()] || 'stop';
+    var nt = u8(), tracks = [];
+    for (var k = 0; k < nt; k++) {
+      var n = u8(), t0 = u8() / 255, t1 = u8() / 255, pts = [];
+      for (var j = 0; j < n; j++) { var x = i8() * UNIT, y = u8() * UNIT; pts.push([x, y]); }
+      tracks.push({ t0: t0, t1: t1, pts: pts });
+    }
+    var nm = u8(), marks = [];
+    for (var m = 0; m < nm; m++) { var type = MARK_NAMES[u8()] || 'freeze'; var mx = i8() * UNIT, my = u8() * UNIT; marks.push({ type: type, x: mx, y: my }); }
+    return { v: VERSION, date: dayString(day), round: round, result: result, tracks: tracks, marks: marks };
+  }
+
+  // ---------- base64url ----------
+  var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  function toB64(bytes) {
+    var s = '';
+    for (var i = 0; i < bytes.length; i += 3) {
+      var a = bytes[i], b = bytes[i + 1], c = bytes[i + 2];
+      s += B64[a >> 2] + B64[((a & 3) << 4) | ((b || 0) >> 4)];
+      if (i + 1 < bytes.length) s += B64[((b & 15) << 2) | ((c || 0) >> 6)];
+      if (i + 2 < bytes.length) s += B64[c & 63];
+    }
+    return s;
+  }
+  function fromB64(s) {
+    var out = [], buf = 0, bits = 0;
+    for (var i = 0; i < s.length; i++) {
+      var v = B64.indexOf(s[i]);
+      if (v < 0) throw new Error('잘못된 글자');
+      buf = (buf << 6) | v; bits += 6;
+      if (bits >= 8) { bits -= 8; out.push((buf >> bits) & 255); }
+    }
+    return new Uint8Array(out);
+  }
+
+  // 데이터 → 주소의 # 뒤에 붙일 글자
+  function toFragment(data, maxBytes) { return PREFIX + toB64(encode(fit(data, maxBytes))); }
+  function toUrl(baseUrl, data, maxBytes) { return String(baseUrl).split('#')[0] + '#' + toFragment(data, maxBytes); }
+  // location.hash → 데이터 (형식이 틀리면 null)
+  function fromHash(hash) {
+    var h = String(hash || '').replace(/^#/, '');
+    if (h.indexOf(PREFIX) !== 0) return null;
+    try { return decode(fromB64(h.slice(PREFIX.length))); } catch (e) { return null; }
+  }
+
+  // ---------- 한 판 기록기 ----------
+  // 게임 쪽에서 부르는 순서:
+  //   rec = new Recorder({round: 12})
+  //   rec.phase('chant', t)  외칠 때마다     rec.phase('look', t)  돌아볼 때마다
+  //   rec.frame(t, [[x,y], ...])  스캔마다 다리 덩어리 중심 (미터)
+  //   rec.mark('caught', x, y)  걸렸을 때     rec.mark('win', x, y)  잡혔을 때
+  //   data = rec.finish('person' | 'robot' | 'stop', t)
+  // t는 밀리초(같은 시계면 무엇이든). 외치는 동안의 움직임만 길로 남기고,
+  // 돌아본 순간 마지막 자리를 '멈춘 자리'로 남긴다.
+  function Recorder(opts) {
+    opts = opts || {};
+    this.round = opts.round || 0;
+    this.date = opts.date || today();
+    this.gate = opts.gate || 0.30;        // 다음 스캔에서 같은 다리로 볼 거리
+    this.staleMs = opts.staleMs || 1000;  // 이만큼 안 보이면 그 길은 끝
+    this.autoFreeze = opts.autoFreeze !== false;
+    this.t0 = null; this.tLast = null;
+    this.state = 'idle';
+    this.done = [];     // 끝난 길 {ta, tb, pts}
+    this.open = [];     // 지금 이어지는 길 {ta, tb, pts}
+    this.marks = [];
+  }
+  Recorder.prototype._time = function (t) {
+    if (this.t0 === null) this.t0 = t;
+    this.tLast = t;
+  };
+  Recorder.prototype._closeAll = function (t) {
+    var self = this;
+    this.open.forEach(function (tr) {
+      // 잠깐 스친 잡음(점 5개 미만)은 멈춘 자리로 치지 않는다
+      if (self.autoFreeze && tr.pts.length >= 5 && t - tr.tb <= 500) {
+        var p = tr.pts[tr.pts.length - 1];
+        self.marks.push({ type: 'freeze', x: p[0], y: p[1] });
+      }
+      self.done.push(tr);
+    });
+    this.open = [];
+  };
+  Recorder.prototype.phase = function (name, t) {
+    this._time(t);
+    if (name === 'look' && this.state === 'chant') this._closeAll(t);
+    this.state = name;
+  };
+  Recorder.prototype.frame = function (t, pts) {
+    this._time(t);
+    if (this.state !== 'chant' || !pts) return;
+    var self = this, used = {};
+    // 오래 안 보인 길은 닫는다
+    this.open = this.open.filter(function (tr) {
+      if (t - tr.tb > self.staleMs) { self.done.push(tr); return false; }
+      return true;
+    });
+    // 가까운 것부터 짝짓기
+    var pairs = [];
+    this.open.forEach(function (tr, ti) {
+      var last = tr.pts[tr.pts.length - 1];
+      pts.forEach(function (p, pi) { var d = dist(last, p); if (d <= self.gate) pairs.push([d, ti, pi]); });
+    });
+    pairs.sort(function (a, b) { return a[0] - b[0]; });
+    var takenT = {};
+    pairs.forEach(function (q) {
+      if (takenT[q[1]] || used[q[2]]) return;
+      takenT[q[1]] = used[q[2]] = true;
+      var tr = self.open[q[1]];
+      tr.pts.push([pts[q[2]][0], pts[q[2]][1]]); tr.tb = t;
+    });
+    pts.forEach(function (p, pi) {
+      if (!used[pi]) self.open.push({ ta: t, tb: t, pts: [[p[0], p[1]]] });
+    });
+  };
+  Recorder.prototype.mark = function (type, x, y) {
+    this.marks.push({ type: type, x: x, y: y });
+  };
+  Recorder.prototype.finish = function (result, t) {
+    if (t !== undefined) this._time(t);
+    var tEnd = this.tLast === null ? 0 : this.tLast;
+    this.done = this.done.concat(this.open); this.open = [];
+    var span = Math.max(1, tEnd - (this.t0 || 0)), t0 = this.t0 || 0;
+    var tracks = this.done.filter(function (tr) { return tr.pts.length >= 2; }).map(function (tr) {
+      return { t0: (tr.ta - t0) / span, t1: (tr.tb - t0) / span, pts: tr.pts };
+    });
+    return { v: VERSION, date: this.date, round: this.round, result: result || 'stop', tracks: tracks, marks: this.marks.slice() };
+  };
+
+  // ---------- 그리기 ----------
+  var COLORS = { bg: '#0f1013', ring: 'rgba(241,239,232,0.10)', label: '#a8a69e', freeze: '#f6f4ee', caught: '#ff6b5e', win: '#f4b63a', robot: '#3a3a37' };
+
+  // ctx에 (0,0)-(w,h) 크기로 그린다. opts.labels: 거리 글자, opts.robotLabel: 로봇 옆 설명
+  function draw(ctx, data, w, h, opts) {
+    opts = opts || {};
+    var xs = [0], ys = [0];
+    data.tracks.forEach(function (t) { t.pts.forEach(function (p) { xs.push(p[0]); ys.push(p[1]); }); });
+    data.marks.forEach(function (m) { xs.push(m.x); ys.push(m.y); });
+    var halfW = Math.max(1.6, Math.max.apply(null, xs.map(Math.abs)) + 0.35);
+    var depth = Math.max(3.1, Math.max.apply(null, ys) + 0.35);
+    var below = 0.55;
+    var s = Math.min(w / (2 * halfW), h / (depth + below));
+    var ox = w / 2, oy = h - below * s;
+    function P(x, y) { return [ox - x * s, oy - y * s]; }
+    var lw = Math.max(1.5, s / 55);
+
+    ctx.save();
+    ctx.fillStyle = COLORS.bg; ctx.fillRect(0, 0, w, h);
+    // 1m 거리 고리
+    ctx.strokeStyle = COLORS.ring; ctx.lineWidth = 1;
+    for (var r = 1; r <= Math.floor(depth); r++) { ctx.beginPath(); ctx.arc(ox, oy, r * s, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke(); }
+    if (opts.labels) {
+      ctx.fillStyle = COLORS.label; ctx.font = Math.round(Math.max(11, s / 9)) + 'px ' + (opts.font || 'sans-serif');
+      for (var r2 = 1; r2 <= Math.floor(depth); r2++) ctx.fillText(r2 + 'm', ox + 4, oy - r2 * s + Math.max(11, s / 9) + 2);
+    }
+    // 외치는 동안 움직인 길: 시간에 따라 청록 → 보라
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = lw;
+    data.tracks.forEach(function (t) {
+      var n = t.pts.length;
+      for (var i = 1; i < n; i++) {
+        var tt = t.t0 + (t.t1 - t.t0) * (i / (n - 1));
+        var a = P(t.pts[i - 1][0], t.pts[i - 1][1]), b = P(t.pts[i][0], t.pts[i][1]);
+        ctx.strokeStyle = 'hsl(' + Math.round(175 + tt * 120) + ',80%,62%)';
+        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+      }
+    });
+    function dot(x, y, rad, col) { var p = P(x, y); ctx.fillStyle = col; ctx.beginPath(); ctx.arc(p[0], p[1], rad, 0, Math.PI * 2); ctx.fill(); }
+    function ring(x, y, rad, col, dash) { var p = P(x, y); ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, s / 45); ctx.setLineDash(dash || []); ctx.beginPath(); ctx.arc(p[0], p[1], rad, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
+    var dotR = Math.max(2.5, s / 40);
+    var won = false;
+    data.marks.forEach(function (m) {
+      if (m.type === 'freeze') dot(m.x, m.y, dotR, COLORS.freeze);
+      else if (m.type === 'caught') ring(m.x, m.y, 0.22 * s, COLORS.caught);
+      else if (m.type === 'win') { dot(m.x, m.y, dotR, COLORS.win); won = true; }
+    });
+    if (won || data.result === 'person') ring(0, 0, 0.40 * s, COLORS.win, [Math.max(4, s / 18), Math.max(3, s / 28)]);
+    // 로봇
+    ctx.fillStyle = COLORS.robot; ctx.beginPath(); ctx.arc(ox, oy, 0.09 * s, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = COLORS.label; ctx.lineWidth = 1.5; ctx.stroke();
+    if (opts.robotLabel) {
+      ctx.fillStyle = COLORS.label; ctx.font = Math.round(Math.max(11, s / 9)) + 'px ' + (opts.font || 'sans-serif');
+      ctx.fillText(opts.robotLabel, ox + 0.5 * s, oy + 4);
+    }
+    ctx.restore();
+  }
+
+  var RESULT_TEXT = { person: '사람 승리', robot: '술래 승리', stop: '' };
+  function subtitle(data) {
+    var d = String(data.date).replace(/-/g, '.');
+    var parts = [d];
+    if (data.round) parts.push(data.round + '번째 판');
+    if (RESULT_TEXT[data.result]) parts.push(RESULT_TEXT[data.result]);
+    return parts.join(' · ');
+  }
+
+  var api = {
+    VERSION: VERSION, UNIT: UNIT, DEFAULT_MAX_BYTES: DEFAULT_MAX_BYTES, COLORS: COLORS,
+    encode: encode, decode: decode, fit: fit, byteSize: byteSize,
+    toFragment: toFragment, toUrl: toUrl, fromHash: fromHash,
+    Recorder: Recorder, draw: draw, subtitle: subtitle, today: today
+  };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.Souvenir = Object.assign(root.Souvenir || {}, api);
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+// 같은 탭에서 다른 판의 QR을 찍으면 # 뒤만 바뀌므로 새로 그린다
+window.addEventListener('hashchange', function () { location.reload(); });
+(function () {
+  var S = window.Souvenir;
+  var data = S && S.fromHash(location.hash);
+  if (!data) {
+    document.getElementById('app').innerHTML = '<p class="err">그림을 불러오지 못했어요.<br>전시 화면의 QR을 다시 찍어 주세요.</p>';
+    return;
+  }
+  var FONT = '-apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif';
+  // 저장·공유용 카드 1080×1350
+  var W = 1080, H = 1350, cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  var g = cv.getContext('2d');
+  g.fillStyle = S.COLORS.bg; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#f1efe8'; g.font = '700 64px ' + FONT; g.fillText('로봇이 본 나', 64, 118);
+  g.fillStyle = '#a8a69e'; g.font = '32px ' + FONT; g.fillText(S.subtitle(data), 64, 172);
+  g.save(); g.translate(40, 210); S.draw(g, data, W - 80, 920, { labels: true, robotLabel: '로봇 (눈높이 18cm)', font: FONT }); g.restore();
+  g.fillStyle = '#f1efe8'; g.font = '500 38px ' + FONT; g.fillText('“누군지는 몰라도 발은 다 봤어.”', 64, 1222);
+  g.fillStyle = '#a8a69e'; g.font = '28px ' + FONT; g.fillText('얼굴 없는 술래 · 카메라 없이 바닥 위 18cm에서 본 그림', 64, 1282);
+  var png = cv.toDataURL('image/png');
+  document.getElementById('card').src = png;
+  document.getElementById('save').href = png;
+  var name = '얼굴없는술래_' + data.date + (data.round ? '_' + data.round : '') + '.png';
+  document.getElementById('save').download = name;
+
+  document.getElementById('share').addEventListener('click', function () {
+    cv.toBlob(function (blob) {
+      var file = blob && typeof File === 'function' ? new File([blob], name, { type: 'image/png' }) : null;
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+        navigator.share({ files: [file], title: '로봇이 본 나' }).catch(function () {});
+      } else if (navigator.share) {
+        navigator.share({ title: '로봇이 본 나', url: location.href }).catch(function () {});
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(location.href).then(function () { document.getElementById('hint').textContent = '링크를 복사했어요.'; });
+      }
+    }, 'image/png');
+  });
+  if (!/iPhone|iPad/.test(navigator.userAgent)) document.getElementById('hint').textContent = '';
+})();
+</script>
+</body>
+</html>
