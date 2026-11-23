@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
-<title>로봇이 본 나 · 얼굴 없는 술래</title>
+<title>로봇과 놀았던 추억 · 얼굴 없는 술래</title>
 <style>
   :root { --bg:#fbfaf7; --ink:#1d1d1b; --quiet:#6b685f; --line:#e4e1d9; --btn:#1d1d1b; --btn2:#ebe8e1; }
   @media (prefers-color-scheme: dark) { :root { --bg:#141413; --ink:#f1efe8; --quiet:#a8a69e; --line:#2c2c2a; --btn:#f1efe8; --btn2:#2c2c2a; } }
@@ -13,7 +13,7 @@
   main { max-width:480px; margin:0 auto; padding:18px 16px 32px; }
   .kicker { font-size:13px; color:var(--quiet); margin:0; }
   h1 { font-size:24px; margin:4px 0 14px; }
-  #card { width:100%; border-radius:16px; display:block; background:#0f1013; aspect-ratio:4/5; -webkit-touch-callout:default; }
+  #card { width:100%; border-radius:16px; display:block; background:#07080a; aspect-ratio:4/5; -webkit-touch-callout:default; }
   .say { font-size:16px; line-height:1.55; margin:14px 2px 0; }
     .btns { display:flex; gap:8px; margin-top:16px; }
   .btns button, .btns a { flex:1; font:inherit; font-size:15px; font-weight:600; padding:13px 0; border-radius:12px; border:0; text-align:center; text-decoration:none; cursor:pointer; }
@@ -27,12 +27,12 @@
 <body>
 <main id="app">
   <p class="kicker">얼굴 없는 술래</p>
-  <h1>로봇이 본 나</h1>
-  <img id="card" alt="로봇이 LiDAR로 본 이번 판의 그림">
-  <p class="say">제 눈은 바닥 위 18cm라서, 당신은 점 두 개로만 보였어요.</p>
+  <h1>로봇과 놀았던 추억</h1>
+  <img id="card" alt="로봇이 바닥 위 18cm에서 본 우리의 한 판">
+  <p class="say">제 눈은 바닥 위 18cm에 있어서 얼굴은 보지 못했어요. 대신 살금살금 다가오던 발걸음은 하나도 빠짐없이 기억해요. 같이 놀아 줘서 고마워요.</p>
   <div class="btns"><a class="b1" id="save" download="얼굴없는술래.png">이미지 저장</a><button class="b2" id="share" type="button">공유하기</button></div>
   <p class="hint" id="hint">아이폰은 그림을 길게 누르면 사진 앱에 저장할 수 있어요.</p>
-  <p class="foot">이 그림은 QR 주소 안에 담겨 있어요. 카메라와 마이크는 쓰지 않았고, 서버에도 저장되지 않아요.<br>2026 로보틱스 작품공모전 출품작</p>
+  <p class="foot">이 그림은 QR 주소 안에만 담겨 있어요. 카메라와 마이크는 쓰지 않았고, 어디에도 저장되지 않아요.<br>2026 로보틱스 작품공모전 출품작</p>
 </main>
 <!-- 배포용(dist/viewer.html)에서는 build_viewer.py가 core.js를 이 자리에 넣는다 -->
 <script>
@@ -287,7 +287,28 @@
   };
 
   // ---------- 그리기 ----------
-  var COLORS = { bg: '#0f1013', ring: 'rgba(241,239,232,0.10)', label: '#a8a69e', freeze: '#f6f4ee', caught: '#ff6b5e', win: '#f4b63a', robot: '#3a3a37' };
+  // 1차 시연 영상(art.html)과 같은 느낌: 검은 바탕에 LiDAR 점이 시간에 따라 호박색 → 붉은색 → 보라 → 하늘색으로 쌓이고,
+  // 발을 디딘 자리는 겹쳐서 밝게, 돌아봤을 때 멈춘 자리는 흰 점, 걸린 순간은 빨간 고리, 잡은 순간은 금빛 원.
+  // QR에는 다리 중심의 길만 들어 있으므로, 그 길을 따라 LiDAR가 보는 다리 앞면(작은 호)을 다시 만들어 찍는다.
+  var COLORS = { bg: '#07080a', ring: 'rgba(241,239,232,0.16)', label: '#8d8b84', freeze: '#ffffff', caught: 'rgba(255,72,60,0.9)', win: 'rgba(255,196,80,0.95)', robot: 'rgba(241,239,232,0.75)' };
+
+  function hue(p) { return (35 - 200 * p + 360) % 360; }
+  function rng(seed) { var s = (Math.abs(Math.round(seed)) % 2147483646) + 1; return function () { s = (s * 16807) % 2147483647; return s / 2147483647; }; }
+
+  // LiDAR가 보는 다리 앞면: 로봇 쪽 반원을 1° 간격으로 본 점들. 실제 녹화처럼 앞뒤(거리)로 더 흔들린다
+  function legArc(x, y, jit, rnd) {
+    var d = Math.sqrt(x * x + y * y) || 0.01, ux = x / d, uy = y / d, lx = -uy, ly = ux;
+    var R = 0.05, step = Math.max(0.012, d * 0.01745);
+    var n = Math.max(3, Math.min(8, Math.round(0.09 / step) + 1));
+    var out = [];
+    for (var k = 0; k < n; k++) {
+      var l = (k / (n - 1) - 0.5) * 0.09;
+      var dep = 0.6 * (R - Math.sqrt(R * R - l * l)) - 0.03 + (rnd() - 0.5) * jit * 1.6;
+      var side = l + (rnd() - 0.5) * jit * 0.5;
+      out.push([x + ux * dep + lx * side, y + uy * dep + ly * side]);
+    }
+    return out;
+  }
 
   // ctx에 (0,0)-(w,h) 크기로 그린다. opts.labels: 거리 글자, opts.robotLabel: 로봇 옆 설명
   function draw(ctx, data, w, h, opts) {
@@ -295,55 +316,107 @@
     var xs = [0], ys = [0];
     data.tracks.forEach(function (t) { t.pts.forEach(function (p) { xs.push(p[0]); ys.push(p[1]); }); });
     data.marks.forEach(function (m) { xs.push(m.x); ys.push(m.y); });
-    var halfW = Math.max(1.6, Math.max.apply(null, xs.map(Math.abs)) + 0.35);
-    var depth = Math.max(3.1, Math.max.apply(null, ys) + 0.35);
-    var below = 0.55;
+    var halfW = Math.max(1.0, Math.max.apply(null, xs.map(Math.abs)) + 0.35);
+    var depth = Math.max(1.7, Math.max.apply(null, ys) + 0.35);
+    var below = 0.64;
     var s = Math.min(w / (2 * halfW), h / (depth + below));
     var ox = w / 2, oy = h - below * s;
     function P(x, y) { return [ox - x * s, oy - y * s]; }
-    var lw = Math.max(1.5, s / 55);
+    var rp = Math.max(1.1, s * 0.0085);
+    var fontPx = Math.round(Math.max(11, s / 11));
+    function dots(pts, r) {
+      ctx.beginPath();
+      pts.forEach(function (q) { var p = P(q[0], q[1]); ctx.moveTo(p[0] + r, p[1]); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); });
+      ctx.fill();
+    }
 
     ctx.save();
     ctx.fillStyle = COLORS.bg; ctx.fillRect(0, 0, w, h);
-    // 1m 거리 고리
-    ctx.strokeStyle = COLORS.ring; ctx.lineWidth = 1;
-    for (var r = 1; r <= Math.floor(depth); r++) { ctx.beginPath(); ctx.arc(ox, oy, r * s, Math.PI * 1.08, Math.PI * 1.92); ctx.stroke(); }
-    if (opts.labels) {
-      ctx.fillStyle = COLORS.label; ctx.font = Math.round(Math.max(11, s / 9)) + 'px ' + (opts.font || 'sans-serif');
-      for (var r2 = 1; r2 <= Math.floor(depth); r2++) ctx.fillText(r2 + 'm', ox + 4, oy - r2 * s + Math.max(11, s / 9) + 2);
-    }
-    // 외치는 동안 움직인 길: 시간에 따라 청록 → 보라
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.lineWidth = lw;
-    data.tracks.forEach(function (t) {
-      var n = t.pts.length;
-      for (var i = 1; i < n; i++) {
-        var tt = t.t0 + (t.t1 - t.t0) * (i / (n - 1));
-        var a = P(t.pts[i - 1][0], t.pts[i - 1][1]), b = P(t.pts[i][0], t.pts[i][1]);
-        ctx.strokeStyle = 'hsl(' + Math.round(175 + tt * 120) + ',80%,62%)';
-        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    // 1m 거리 고리: 빈 방 윤곽처럼 옅은 점선
+    ctx.fillStyle = COLORS.ring;
+    for (var r = 1; r <= Math.floor(depth); r++) {
+      var a0 = Math.PI * 1.08, a1 = Math.PI * 1.92, n = Math.round((a1 - a0) * r / 0.03);
+      ctx.beginPath();
+      for (var i = 0; i <= n; i++) {
+        var th = a0 + (a1 - a0) * i / n, px = ox + r * s * Math.cos(th), py = oy + r * s * Math.sin(th);
+        ctx.moveTo(px + rp * 0.6, py); ctx.arc(px, py, rp * 0.6, 0, Math.PI * 2);
       }
+      ctx.fill();
+    }
+    if (opts.labels) {
+      ctx.fillStyle = COLORS.label; ctx.font = fontPx + 'px ' + (opts.font || 'sans-serif');
+      for (var r2 = 1; r2 <= Math.floor(depth); r2++) ctx.fillText(r2 + 'm', ox + 6, oy - r2 * s + fontPx + 4);
+    }
+
+    // 외치는 동안 다가온 발걸음
+    ctx.globalCompositeOperation = 'lighter';
+    data.tracks.forEach(function (t, ti) {
+      var pts = t.pts, rnd = rng(ti * 7919 + pts.length * 31 + 17);
+      var cum = [0];
+      for (var i = 1; i < pts.length; i++) cum.push(cum[i - 1] + dist(pts[i - 1], pts[i]));
+      var L = cum[cum.length - 1];
+      if (!(L > 0)) return;
+      function at(dd) {
+        var i = 1;
+        while (i < pts.length - 1 && cum[i] < dd) i++;
+        var a = pts[i - 1], b = pts[i], seg = (cum[i] - cum[i - 1]) || 1, f = clamp((dd - cum[i - 1]) / seg, 0, 1);
+        return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f];
+      }
+      function col(dd, al) { return 'hsla(' + Math.round(hue(t.t0 + (t.t1 - t.t0) * (dd / L))) + ',90%,60%,' + al + ')'; }
+      // 지나간 길: 옅은 점
+      for (var dd = 0; dd <= L; dd += 0.035) { var q = at(dd); ctx.fillStyle = col(dd, 0.12); dots(legArc(q[0], q[1], 0.016, rnd), rp); }
+      // 발을 디딘 자리: 같은 자리에 여러 번 찍혀 밝게 남는다
+      var stance = [0];
+      for (var ds = 0.22 * (0.4 + 0.5 * rnd()); ds < L - 0.08; ds += 0.22 * (0.8 + 0.4 * rnd())) stance.push(ds);
+      stance.push(L);
+      stance.forEach(function (sd) {
+        var q2 = at(sd);
+        ctx.fillStyle = col(sd, 0.12);
+        for (var k = 0; k < 7; k++) dots(legArc(q2[0], q2[1], 0.02, rnd), rp);
+      });
     });
-    function dot(x, y, rad, col) { var p = P(x, y); ctx.fillStyle = col; ctx.beginPath(); ctx.arc(p[0], p[1], rad, 0, Math.PI * 2); ctx.fill(); }
-    function ring(x, y, rad, col, dash) { var p = P(x, y); ctx.strokeStyle = col; ctx.lineWidth = Math.max(2, s / 45); ctx.setLineDash(dash || []); ctx.beginPath(); ctx.arc(p[0], p[1], rad, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]); }
-    var dotR = Math.max(2.5, s / 40);
-    var won = false;
+    // 돌아봤을 때 멈춘 자리: 흰 점
+    var rndM = rng(data.marks.length * 131 + 7);
     data.marks.forEach(function (m) {
-      if (m.type === 'freeze') dot(m.x, m.y, dotR, COLORS.freeze);
-      else if (m.type === 'caught') ring(m.x, m.y, 0.22 * s, COLORS.caught);
-      else if (m.type === 'win') { dot(m.x, m.y, dotR, COLORS.win); won = true; }
+      if (m.type !== 'freeze') return;
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      for (var k = 0; k < 10; k++) dots(legArc(m.x, m.y, 0.014, rndM), rp * 1.1);
     });
-    if (won || data.result === 'person') ring(0, 0, 0.40 * s, COLORS.win, [Math.max(4, s / 18), Math.max(3, s / 28)]);
-    // 로봇
-    ctx.fillStyle = COLORS.robot; ctx.beginPath(); ctx.arc(ox, oy, 0.09 * s, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = COLORS.label; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.globalCompositeOperation = 'source-over';
+    data.marks.forEach(function (m) {
+      if (m.type !== 'freeze' && m.type !== 'win') return;
+      ctx.save();
+      ctx.shadowColor = m.type === 'win' ? 'rgba(255,196,80,0.9)' : 'rgba(255,255,255,0.9)'; ctx.shadowBlur = rp * 6;
+      ctx.fillStyle = m.type === 'win' ? '#ffd27a' : COLORS.freeze;
+      dots(legArc(m.x, m.y, 0.008, rndM), rp * 1.2);
+      ctx.restore();
+    });
+    // 걸린 순간: 빨간 고리
+    ctx.strokeStyle = COLORS.caught; ctx.lineWidth = Math.max(1, rp * 0.55);
+    data.marks.forEach(function (m) {
+      if (m.type !== 'caught') return;
+      legArc(m.x, m.y, 0.01, rndM).forEach(function (q) {
+        var p = P(q[0], q[1]); ctx.beginPath(); ctx.arc(p[0], p[1], rp * 4, 0, Math.PI * 2); ctx.stroke();
+      });
+    });
+    // 잡은 순간: 로봇 둘레 40cm 금빛 원
+    var won = data.result === 'person' || data.marks.some(function (m) { return m.type === 'win'; });
+    if (won) { ctx.strokeStyle = COLORS.win; ctx.lineWidth = Math.max(1.5, rp * 0.8); ctx.beginPath(); ctx.arc(ox, oy, 0.40 * s, 0, Math.PI * 2); ctx.stroke(); }
+    // 로봇: 작은 원과 정면 표시
+    var rr = Math.max(4, rp * 2.6);
+    ctx.strokeStyle = COLORS.robot; ctx.lineWidth = Math.max(1.2, rp * 0.6);
+    ctx.beginPath(); ctx.arc(ox, oy, rr, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(ox, oy - rr * 1.6); ctx.lineTo(ox, oy - rr * 2.8); ctx.stroke();
     if (opts.robotLabel) {
-      ctx.fillStyle = COLORS.label; ctx.font = Math.round(Math.max(11, s / 9)) + 'px ' + (opts.font || 'sans-serif');
-      ctx.fillText(opts.robotLabel, ox + 0.5 * s, oy + 4);
+      ctx.fillStyle = COLORS.label; ctx.font = fontPx + 'px ' + (opts.font || 'sans-serif');
+      ctx.textAlign = 'center';   // 좁은 화면에서도 잘리지 않게 로봇 아래 가운데
+      ctx.fillText(opts.robotLabel, ox, Math.min(h - 6, oy + 0.4 * s + fontPx * 1.3));
+      ctx.textAlign = 'start';
     }
     ctx.restore();
   }
 
-  var RESULT_TEXT = { person: '사람 승리', robot: '술래 승리', stop: '' };
+  var RESULT_TEXT = { person: '당신이 이겼어요', robot: '술래가 이겼어요', stop: '' };
   function subtitle(data) {
     var d = String(data.date).replace(/-/g, '.');
     var parts = [d];
@@ -370,7 +443,12 @@ window.addEventListener('hashchange', function () { location.reload(); });
   var S = window.Souvenir;
   var data = S && S.fromHash(location.hash);
   if (!data) {
-    document.getElementById('app').innerHTML = '<p class="err">그림을 불러오지 못했어요.<br>전시 화면의 QR을 다시 찍어 주세요.</p>';
+    // 주소만 열었을 때(# 뒤가 없음)는 안내, # 뒤가 깨졌을 때만 다시 찍어 달라고 한다
+    document.getElementById('app').innerHTML = location.hash.length < 4
+      ? '<p class="kicker">얼굴 없는 술래</p><h1>로봇과 놀았던 추억</h1>' +
+        '<p class="say">추억 그림은 부스 화면의 QR 안에 담겨 있어요.<br>한 판이 끝나면 화면에 뜨는 QR을 폰 카메라로 찍어 주세요.</p>' +
+        '<p class="foot">카메라와 마이크는 쓰지 않고, 그림은 어디에도 저장하지 않아요.<br>2026 로보틱스 작품공모전 출품작</p>'
+      : '<p class="err">그림을 불러오지 못했어요.<br>부스 화면의 QR을 다시 찍어 주세요.</p>';
     return;
   }
   var FONT = '-apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif';
@@ -379,11 +457,12 @@ window.addEventListener('hashchange', function () { location.reload(); });
   cv.width = W; cv.height = H;
   var g = cv.getContext('2d');
   g.fillStyle = S.COLORS.bg; g.fillRect(0, 0, W, H);
-  g.fillStyle = '#f1efe8'; g.font = '700 64px ' + FONT; g.fillText('로봇이 본 나', 64, 118);
-  g.fillStyle = '#a8a69e'; g.font = '32px ' + FONT; g.fillText(S.subtitle(data), 64, 172);
-  g.save(); g.translate(40, 210); S.draw(g, data, W - 80, 920, { labels: true, robotLabel: '로봇 (눈높이 18cm)', font: FONT }); g.restore();
-  g.fillStyle = '#f1efe8'; g.font = '500 38px ' + FONT; g.fillText('“누군지는 몰라도 발은 다 봤어.”', 64, 1222);
-  g.fillStyle = '#a8a69e'; g.font = '28px ' + FONT; g.fillText('얼굴 없는 술래 · 카메라 없이 바닥 위 18cm에서 본 그림', 64, 1282);
+  g.fillStyle = '#8d8b84'; g.font = '30px ' + FONT; g.fillText('얼굴 없는 술래', 64, 86);
+  g.fillStyle = '#f1efe8'; g.font = '700 60px ' + FONT; g.fillText('로봇과 놀았던 추억', 64, 154);
+  g.fillStyle = '#a8a69e'; g.font = '30px ' + FONT; g.fillText(S.subtitle(data), 64, 202);
+  g.save(); g.translate(40, 232); S.draw(g, data, W - 80, 900, { labels: true, robotLabel: '로봇 (눈높이 18cm)', font: FONT }); g.restore();
+  g.fillStyle = '#f1efe8'; g.font = '500 38px ' + FONT; g.fillText('“얼굴은 몰라도, 당신의 발걸음은 기억할게요.”', 64, 1218);
+  g.fillStyle = '#8d8b84'; g.font = '26px ' + FONT; g.fillText('로봇의 눈높이에서 우리는 모두 같은 두 개의 점이다', 64, 1278);
   var png = cv.toDataURL('image/png');
   document.getElementById('card').src = png;
   document.getElementById('save').href = png;
@@ -394,9 +473,9 @@ window.addEventListener('hashchange', function () { location.reload(); });
     cv.toBlob(function (blob) {
       var file = blob && typeof File === 'function' ? new File([blob], name, { type: 'image/png' }) : null;
       if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: '로봇이 본 나' }).catch(function () {});
+        navigator.share({ files: [file], title: '로봇과 놀았던 추억' }).catch(function () {});
       } else if (navigator.share) {
-        navigator.share({ title: '로봇이 본 나', url: location.href }).catch(function () {});
+        navigator.share({ title: '로봇과 놀았던 추억', url: location.href }).catch(function () {});
       } else if (navigator.clipboard) {
         navigator.clipboard.writeText(location.href).then(function () { document.getElementById('hint').textContent = '링크를 복사했어요.'; });
       }
