@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
-<title>로봇과 놀았던 추억 · 얼굴 없는 술래</title>
+<title>얼굴 없는 술래 — 로봇과 놀았던 추억</title>
 <style>
   :root { --bg:#fbfaf7; --ink:#1d1d1b; --quiet:#6b685f; --line:#e4e1d9; --btn:#1d1d1b; --btn2:#ebe8e1; }
   @media (prefers-color-scheme: dark) { :root { --bg:#141413; --ink:#f1efe8; --quiet:#a8a69e; --line:#2c2c2a; --btn:#f1efe8; --btn2:#2c2c2a; } }
@@ -12,8 +12,9 @@
   body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif; -webkit-text-size-adjust:100%; }
   main { max-width:480px; margin:0 auto; padding:18px 16px 32px; }
   .kicker { font-size:13px; color:var(--quiet); margin:0; }
-  h1 { font-size:24px; margin:4px 0 14px; }
-  #card { width:100%; border-radius:16px; display:block; background:#07080a; aspect-ratio:4/5; -webkit-touch-callout:default; }
+  h1 { font-size:30px; margin:2px 0 2px; letter-spacing:-0.01em; }
+  .sub { font-size:18px; font-weight:600; margin:0 0 14px; color:var(--quiet); }
+  #card { width:100%; border-radius:16px; display:block; background:#000; aspect-ratio:4/5; -webkit-touch-callout:default; }
   .say { font-size:16px; line-height:1.55; margin:14px 2px 0; }
     .btns { display:flex; gap:8px; margin-top:16px; }
   .btns button, .btns a { flex:1; font:inherit; font-size:15px; font-weight:600; padding:13px 0; border-radius:12px; border:0; text-align:center; text-decoration:none; cursor:pointer; }
@@ -26,8 +27,8 @@
 </head>
 <body>
 <main id="app">
-  <p class="kicker">얼굴 없는 술래</p>
-  <h1>로봇과 놀았던 추억</h1>
+  <h1>얼굴 없는 술래</h1>
+  <p class="sub">로봇과 놀았던 추억</p>
   <img id="card" alt="로봇이 바닥 위 18cm에서 본 우리의 한 판">
   <p class="say">제 눈은 바닥 위 18cm에 있어서 얼굴은 보지 못했어요. 대신 살금살금 다가오던 발걸음은 하나도 빠짐없이 기억해요. 같이 놀아 줘서 고마워요.</p>
   <div class="btns"><a class="b1" id="save" download="얼굴없는술래.png">이미지 저장</a><button class="b2" id="share" type="button">공유하기</button></div>
@@ -427,7 +428,7 @@
 
   var api = {
     VERSION: VERSION, UNIT: UNIT, DEFAULT_MAX_BYTES: DEFAULT_MAX_BYTES, COLORS: COLORS,
-    encode: encode, decode: decode, fit: fit, byteSize: byteSize,
+    encode: encode, decode: decode, fit: fit, byteSize: byteSize, toB64: toB64, fromB64: fromB64,
     toFragment: toFragment, toUrl: toUrl, fromHash: fromHash,
     Recorder: Recorder, draw: draw, subtitle: subtitle, today: today
   };
@@ -437,30 +438,305 @@
 
 </script>
 <script>
+/*
+ * 얼굴 없는 술래 — 기념 그림 v2: 1차 시연 영상(robot/web/art.html)과 같은 그림
+ *
+ * 한 판 동안 LiDAR가 본 실제 점(다리 앞면)을 모아, 3cm 칸으로 줄이고 deflate로 눌러 주소의 # 뒤(v2.)에 담는다.
+ * 서버에는 아무것도 저장하지 않는다. 그리기는 art.html과 같다:
+ *   검은 바탕, 빈 방 윤곽(옅은 점), 움직인 동안의 점은 시간에 따라 호박색 → 붉은색 → 보라 → 하늘색으로 겹쳐 쌓이고,
+ *   돌아본 동안 서 있던 발은 흰 점, 걸린 순간은 빨간 고리, 잡은 순간은 로봇 둘레 40cm 금빛 원.
+ *
+ * 좌표: core.js와 같다(미터, x + = 로봇 왼쪽, y + = 로봇 정면).
+ * 필요: core.js를 먼저 불러온다. 압축은 브라우저 CompressionStream('deflate-raw')을 쓴다(iOS 16.4+, Chrome 103+).
+ */
+(function (root) {
+  'use strict';
+  var S = (typeof module !== 'undefined' && module.exports && typeof require === 'function') ? require('./core.js') : root.Souvenir;
+
+  var V2 = 2, PREFIX2 = 'v2.';
+  var RESULTS = ['person', 'robot', 'stop'];
+  var EPOCH = Date.UTC(2026, 0, 1);
+  var FROZEN = { grace: 1, look: 1, test_grace: 1, test_look: 1 };
+  var DEFAULT_MAX = 660;   // deflate 후 바이트. base64로 약 880자 → QR 버전 22(L) 안팎
+  // 바이트 예산을 넘으면 차례로 거칠게: [칸 cm, 벽 간격°, 한 번만 찍힌 칸 버림]
+  var LEVELS = [[3, 2, false], [3, 3, false], [4, 3, false], [4, 4, true], [5, 4, true], [6, 6, true], [8, 8, true]];
+
+  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+  function dayNumber(dateStr) { var p = String(dateStr).split('-'); return Math.round((Date.UTC(+p[0], +p[1] - 1, +p[2]) - EPOCH) / 864e5); }
+  function dayString(n) { return new Date(EPOCH + n * 864e5).toISOString().slice(0, 10); }
+  function hue(p) { return (35 - 200 * p + 360) % 360; }
+  function rng(seed) { var s = (Math.abs(Math.round(seed)) % 2147483646) + 1; return function () { s = (s * 16807) % 2147483647; return s / 2147483647; }; }
+  function median(a) { if (!a.length) return 0; var s = a.slice().sort(function (x, y) { return x - y; }); return s[Math.floor(s.length / 2)]; }
+
+  // ---------- 한 판 기록기 ----------
+  //   art = new ArtRecorder({round, region: {x0, x1, y0, y1}})   region: 이 사각형 안의 점만 담는다(부스 + 여유)
+  //   art.scan(t, state, {r: [360칸 cm, 0=없음], fg: [전경 칸 번호...]}, pts)   스캔마다. raw가 없으면 pts(다리 중심)를 쓴다
+  //   art.caught()  걸렸을 때(직전 스캔의 점에 빨간 고리)    art.win()  잡혔을 때
+  //   data = art.finish('person' | 'robot' | 'stop')
+  function ArtRecorder(opts) {
+    opts = opts || {};
+    this.round = opts.round || 0;
+    this.date = opts.date || S.today();
+    this.region = opts.region || null;
+    this.t0 = null; this.tLast = null; this.n = 0;
+    this.fine = {};                       // 1cm 칸 'x,y' → [색 횟수, 시각 합(ms), 흰 횟수]
+    this.wallR = []; for (var d = 0; d < 360; d++) this.wallR.push([]);
+    this.last = []; this.rings = []; this.won = false;
+  }
+  ArtRecorder.prototype.scan = function (t, state, raw, pts) {
+    if (this.t0 === null) this.t0 = t;
+    this.tLast = t;
+    var P = [], reg = this.region, d;
+    if (raw && raw.r && raw.r.length === 360) {
+      var fg = {};
+      (raw.fg || []).forEach(function (k) { fg[((k % 360) + 360) % 360] = 1; });
+      for (d = 0; d < 360; d++) {
+        var r = raw.r[d];
+        if (!r || r > 500) continue;
+        if (fg[d]) { var a = d * Math.PI / 180; P.push([r / 100 * Math.sin(a), r / 100 * Math.cos(a)]); }
+        else if (this.n % 3 === 0) this.wallR[d].push(r);
+      }
+    } else if (pts) {
+      P = pts.map(function (p) { return [p[0], p[1]]; });
+    }
+    if (reg) P = P.filter(function (p) { return p[0] >= reg.x0 && p[0] <= reg.x1 && p[1] >= reg.y0 && p[1] <= reg.y1; });
+    var frozen = !!FROZEN[state], dt = t - this.t0, fine = this.fine;
+    P.forEach(function (p) {
+      var k = Math.round(p[0] * 100) + ',' + Math.round(p[1] * 100), c = fine[k] || (fine[k] = [0, 0, 0]);
+      if (frozen) c[2]++; else { c[0]++; c[1] += dt; }
+    });
+    this.last = P;
+    this.n++;
+  };
+  ArtRecorder.prototype.caught = function () { this.rings.push(this.last.slice(0, 60)); };
+  ArtRecorder.prototype.win = function () { this.won = true; };
+  ArtRecorder.prototype.finish = function (result) {
+    var span = Math.max(1, (this.tLast || 0) - (this.t0 || 0)), c = [], w = [], fine = this.fine;
+    Object.keys(fine).forEach(function (k) {
+      var xy = k.split(','), x = +xy[0] / 100, y = +xy[1] / 100, v = fine[k];
+      if (v[0]) c.push([x, y, v[0], clamp(v[1] / v[0] / span, 0, 1)]);
+      if (v[2]) w.push([x, y, v[2]]);
+    });
+    var walls = [];
+    for (var d = 0; d < 360; d++) walls.push(median(this.wallR[d]) / 100);   // 칸마다 빈 방까지 거리(m), 0 = 모름
+    return { v: V2, date: this.date, round: this.round, result: result || 'stop', won: this.won || result === 'person',
+             unit: 0.01, c: c, w: w, wallR: walls, wallStep: 1, rings: this.rings };
+  };
+
+  // ---------- 칸 줄이기 ----------
+  function aggregate(data, unit, dropSingles) {
+    var C = {}, W = {};
+    function key(x, y) { return clamp(Math.round(x / unit), -128, 127) + ',' + clamp(Math.round(y / unit), -128, 127); }
+    data.c.forEach(function (p) { var k = key(p[0], p[1]), v = C[k] || (C[k] = [0, 0]); v[0] += p[2]; v[1] += p[3] * p[2]; });
+    data.w.forEach(function (p) { var k = key(p[0], p[1]); W[k] = (W[k] || 0) + p[2]; });
+    var c = [], w = [];
+    Object.keys(C).forEach(function (k) { var v = C[k]; if (dropSingles && v[0] < 2) return; var xy = k.split(','); c.push([+xy[0], +xy[1], v[0], v[1] / v[0]]); });
+    Object.keys(W).forEach(function (k) { if (dropSingles && W[k] < 2) return; var xy = k.split(','); w.push([+xy[0], +xy[1], W[k]]); });
+    return { c: c, w: w };
+  }
+  function idxOf(xi, yi) { return (xi + 128) * 256 + (yi + 128); }
+  function putVar(b, v) { while (v >= 128) { b.push((v & 127) | 128); v = Math.floor(v / 128); } b.push(v); }
+  function lvl(n) { return clamp(Math.floor(Math.log(Math.max(1, n)) / Math.LN2), 0, 7); }
+
+  // 바이트: [2][날짜 u16][판 u16][결과][표시: 1=잡음][칸 cm][벽 간격°] + 벽(간격마다 4cm 단위 거리, 앞 값과의 차)
+  //        [색 칸 수 u16] + 칸마다 [칸 번호 차 varint][시각 5비트 | 세기 3비트]
+  //        [흰 칸 수 u16] + 칸마다 [칸 번호 차 varint][세기]
+  //        [고리 묶음 수] + 묶음마다 [점 수] + [칸 번호 차 varint]...
+  function encodeArt(data, unitCm, wallStep, dropSingles) {
+    var unit = unitCm / 100, g = aggregate(data, unit, dropSingles), b = [];
+    var day = dayNumber(data.date || S.today()), round = clamp(data.round | 0, 0, 65535);
+    b.push(V2, (day >> 8) & 255, day & 255, (round >> 8) & 255, round & 255, Math.max(0, RESULTS.indexOf(data.result)), data.won ? 1 : 0, unitCm, wallStep);
+    var prev = 0, srcStep = data.wallStep || 1;
+    for (var d = 0; d < 360; d += wallStep) {
+      var vals = [];
+      for (var e = d; e < d + wallStep && e < 360; e++) { var r = data.wallR[Math.floor(e / srcStep)]; if (r > 0) vals.push(r); }
+      var q = vals.length ? clamp(Math.round(median(vals) * 100 / 4), 1, 125) : 0;
+      b.push((q - prev) & 255); prev = q;
+    }
+    function cells(list, attr) {
+      list.sort(function (p, q) { return idxOf(p[0], p[1]) - idxOf(q[0], q[1]); });
+      list = list.slice(0, 65535);
+      b.push((list.length >> 8) & 255, list.length & 255);
+      var last = 0;
+      list.forEach(function (p) { var i = idxOf(p[0], p[1]); putVar(b, i - last); last = i; b.push(attr(p)); });
+    }
+    cells(g.c, function (p) { return (Math.min(30, Math.floor(p[3] * 31)) << 3) | lvl(p[2]); });
+    cells(g.w, function (p) { return lvl(p[2]); });
+    var rings = (data.rings || []).slice(0, 20);
+    b.push(rings.length);
+    rings.forEach(function (ps) {
+      var seen = {}, ids = [];
+      ps.forEach(function (p) {
+        var i = idxOf(clamp(Math.round(p[0] / unit), -128, 127), clamp(Math.round(p[1] / unit), -128, 127));
+        if (!seen[i]) { seen[i] = 1; ids.push(i); }
+      });
+      ids.sort(function (x, y) { return x - y; }); ids = ids.slice(0, 255);
+      b.push(ids.length);
+      var last = 0; ids.forEach(function (i) { putVar(b, i - last); last = i; });
+    });
+    return new Uint8Array(b);
+  }
+
+  function decodeArt(bytes) {
+    var i = 0;
+    function u8() { if (i >= bytes.length) throw new Error('짧은 데이터'); return bytes[i++]; }
+    function vr() { var v = 0, m = 1, c; do { c = u8(); v += (c & 127) * m; m *= 128; } while (c & 128); return v; }
+    if (u8() !== V2) throw new Error('모르는 버전');
+    var day = (u8() << 8) | u8(), round = (u8() << 8) | u8(), result = RESULTS[u8()] || 'stop', flags = u8();
+    var unitCm = u8(), unit = unitCm / 100, wallStep = u8(), wallR = [], q = 0;
+    for (var d = 0; d < 360; d += wallStep) { q = (q + u8()) & 255; wallR.push(q * 4 / 100); }
+    function xy(id) { return [(Math.floor(id / 256) - 128) * unit, (id % 256 - 128) * unit]; }
+    function est(l) { return Math.round(Math.pow(2, l + 0.5)); }
+    var c = [], w = [], n, k, id;
+    n = (u8() << 8) | u8(); id = 0;
+    for (k = 0; k < n; k++) { id += vr(); var a = u8(), p = xy(id); c.push([p[0], p[1], est(a & 7), ((a >> 3) + 0.5) / 31]); }
+    n = (u8() << 8) | u8(); id = 0;
+    for (k = 0; k < n; k++) { id += vr(); var p2 = xy(id); w.push([p2[0], p2[1], est(u8())]); }
+    var nr = u8(), rings = [];
+    for (k = 0; k < nr; k++) { var m = u8(), ps = []; id = 0; for (var j = 0; j < m; j++) { id += vr(); ps.push(xy(id)); } rings.push(ps); }
+    return { v: V2, date: dayString(day), round: round, result: result, won: !!(flags & 1), unit: unit, c: c, w: w, wallR: wallR, wallStep: wallStep, rings: rings };
+  }
+
+  // ---------- 누르기(deflate-raw) + base64url ----------
+  function through(bytes, Stream) {
+    var st = new Blob([bytes]).stream().pipeThrough(new Stream('deflate-raw'));
+    return new Response(st).arrayBuffer().then(function (buf) { return new Uint8Array(buf); });
+  }
+  // 데이터 → 'v2.…' (예산에 맞을 때까지 거칠게)
+  function packArt(data, maxBytes) {
+    maxBytes = maxBytes || DEFAULT_MAX;
+    var k = 0;
+    function attempt() {
+      var L = LEVELS[k];
+      return through(encodeArt(data, L[0], L[1], L[2]), root.CompressionStream).then(function (z) {
+        if (z.length <= maxBytes || k === LEVELS.length - 1) return PREFIX2 + S.toB64(z);
+        k++; return attempt();
+      });
+    }
+    return attempt();
+  }
+  function unpackArt(frag) {
+    return through(S.fromB64(frag.slice(PREFIX2.length)), root.DecompressionStream).then(decodeArt);
+  }
+  function toUrlAsync(baseUrl, data, maxBytes) {
+    var base = String(baseUrl).split('#')[0];
+    if (data.v !== V2) return Promise.resolve(S.toUrl(base, data, maxBytes));
+    return packArt(data, maxBytes).then(function (f) { return base + '#' + f; });
+  }
+  // location.hash → 데이터 (v1, v2 모두). 형식이 틀리면 null
+  function fromHashAsync(hash) {
+    var h = String(hash || '').replace(/^#/, '');
+    if (h.indexOf(PREFIX2) !== 0) return Promise.resolve(S.fromHash(hash));
+    if (typeof root.DecompressionStream !== 'function') return Promise.reject(new Error('old-browser'));
+    return unpackArt(h).catch(function () { return null; });
+  }
+
+  // ---------- 그리기 (art.html과 같은 방식) ----------
+  function drawArt(ctx, data, w, h, opts) {
+    opts = opts || {};
+    var unit = data.unit || 0.01, xs = [0], ys = [0];
+    data.c.concat(data.w).forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
+    function pct(v, q) { var s = v.slice().sort(function (a, b) { return a - b; }); return s[Math.min(s.length - 1, Math.floor(s.length * q))]; }
+    var x0 = Math.min(0, pct(xs, 0.02)), x1 = Math.max(0, pct(xs, 0.98)), y0 = Math.min(0, pct(ys, 0.02)), y1 = Math.max(0, pct(ys, 0.98));
+    var ww = Math.max(1.5, x1 - x0), hh = Math.max(1.5, y1 - y0);
+    var s = Math.min(w * 0.8 / ww, h * 0.74 / hh);
+    var cx = w / 2 + (x0 + x1) / 2 * s, cy = h / 2 + (y0 + y1) / 2 * s;
+    function P(x, y) { return [cx - x * s, cy - y * s]; }
+    var rp = Math.max(opts.minDot || 1.3, s * 0.009);
+    var rnd = rng(data.c.length * 31 + data.w.length * 7 + (data.round || 0));
+    function dot(x, y, r) { var p = P(x, y); ctx.moveTo(p[0] + r, p[1]); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); }
+    // 칸 안에 점을 흩뿌릴 때: LiDAR 점은 같은 거리·이웃 각도라 로봇에서 본 옆 방향(접선)으로 늘어선다
+    function spread(x, y, r) {
+      var d = Math.sqrt(x * x + y * y) || 1, tx = -y / d, ty = x / d, a = (rnd() - 0.5) * unit * 1.4, b = (rnd() - 0.5) * unit * 0.9;
+      dot(x + tx * a + x / d * b, y + ty * a + y / d * b, r);
+    }
+
+    ctx.save();
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+    // 로봇이 아는 빈 방의 윤곽: 1°마다 옅은 점 (간격 사이는 이어 채운다)
+    var st = data.wallStep || 1, wr = data.wallR || [];
+    ctx.fillStyle = 'rgba(241,239,232,0.16)'; ctx.beginPath();
+    for (var k = 0; k < wr.length; k++) {
+      var r1 = wr[k], r2 = wr[(k + 1) % wr.length];
+      if (!(r1 > 0)) continue;
+      for (var j = 0; j < st; j++) {
+        if (j > 0 && !(r2 > 0 && Math.abs(r2 - r1) < 0.25)) break;
+        var r = r1 + (r2 - r1) * j / st, a = (k * st + (st - 1) / 2 + j) * Math.PI / 180;
+        dot(r * Math.sin(a), r * Math.cos(a), rp * 0.6);
+      }
+    }
+    ctx.fill();
+    // 움직인 동안의 점: 시간에 따라 색, 겹칠수록 밝게
+    ctx.globalCompositeOperation = 'lighter';
+    data.c.forEach(function (p) {
+      var m = Math.max(1, Math.min(4, Math.round(p[2] / 3))), al = Math.min(0.95, 0.11 * p[2] / m);
+      ctx.fillStyle = 'hsla(' + Math.round(hue(p[3])) + ',90%,60%,' + al.toFixed(3) + ')';
+      ctx.beginPath();
+      for (var i = 0; i < m; i++) spread(p[0], p[1], rp);
+      ctx.fill();
+    });
+    // 돌아본 동안 서 있던 발: 흰 점
+    data.w.forEach(function (p) {
+      var m = Math.max(1, Math.min(4, Math.round(p[2] / 3))), al = Math.min(0.95, 0.06 * p[2] / m);
+      ctx.fillStyle = 'rgba(255,255,255,' + al.toFixed(3) + ')';
+      ctx.beginPath();
+      for (var i = 0; i < m; i++) spread(p[0], p[1], rp * 1.1);
+      ctx.fill();
+    });
+    ctx.globalCompositeOperation = 'source-over';
+    // 걸린 순간: 그때 보인 점마다 빨간 고리
+    ctx.strokeStyle = 'rgba(255,72,60,0.9)'; ctx.lineWidth = Math.max(1, rp * 0.7);
+    (data.rings || []).forEach(function (ps) {
+      ps.forEach(function (q) { var p = P(q[0], q[1]); ctx.beginPath(); ctx.arc(p[0], p[1], rp * 4, 0, Math.PI * 2); ctx.stroke(); });
+    });
+    // 잡은 순간: 로봇 둘레 40cm 금빛 원
+    if (data.won) { ctx.strokeStyle = 'rgba(255,196,80,0.9)'; ctx.lineWidth = Math.max(1.5, rp); ctx.beginPath(); ctx.arc(cx, cy, 0.40 * s, 0, Math.PI * 2); ctx.stroke(); }
+    // 로봇 (정면 표시)
+    var rr = Math.max(4, rp * 2.8);
+    ctx.strokeStyle = 'rgba(241,239,232,0.7)'; ctx.lineWidth = Math.max(1.2, rp * 0.8);
+    ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - rr * 1.6); ctx.lineTo(cx, cy - rr * 2.8); ctx.stroke();
+    ctx.restore();
+  }
+
+  var drawV1 = S.draw;
+  S.draw = function (ctx, data, w, h, opts) { return data && data.v === V2 ? drawArt(ctx, data, w, h, opts) : drawV1(ctx, data, w, h, opts); };
+  S.ArtRecorder = ArtRecorder;
+  S.encodeArt = encodeArt; S.decodeArt = decodeArt; S.packArt = packArt; S.unpackArt = unpackArt;
+  S.toUrlAsync = toUrlAsync; S.fromHashAsync = fromHashAsync; S.drawArt = drawArt;
+  if (typeof module !== 'undefined' && module.exports) module.exports = S;
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
 // 같은 탭에서 다른 판의 QR을 찍으면 # 뒤만 바뀌므로 새로 그린다
 window.addEventListener('hashchange', function () { location.reload(); });
 (function () {
   var S = window.Souvenir;
-  var data = S && S.fromHash(location.hash);
-  if (!data) {
+  function show(html) { document.getElementById('app').innerHTML = html; }
+  if (!S || location.hash.length < 4) return empty();
+  S.fromHashAsync(location.hash).then(function (data) { if (data) render(data); else bad(); }, function (e) {
+    if (e && e.message === 'old-browser') show('<p class="err">이 폰의 브라우저로는 그림을 열 수 없어요.<br>Safari·Chrome을 최신으로 올린 뒤 다시 찍어 주세요.</p>');
+    else bad();
+  });
+  function bad() { show('<p class="err">그림을 불러오지 못했어요.<br>부스 화면의 QR을 다시 찍어 주세요.</p>'); }
+  function empty() {
     // 주소만 열었을 때(# 뒤가 없음)는 안내, # 뒤가 깨졌을 때만 다시 찍어 달라고 한다
-    document.getElementById('app').innerHTML = location.hash.length < 4
-      ? '<p class="kicker">얼굴 없는 술래</p><h1>로봇과 놀았던 추억</h1>' +
-        '<p class="say">추억 그림은 부스 화면의 QR 안에 담겨 있어요.<br>한 판이 끝나면 화면에 뜨는 QR을 폰 카메라로 찍어 주세요.</p>' +
-        '<p class="foot">카메라와 마이크는 쓰지 않고, 그림은 어디에도 저장하지 않아요.<br>2026 로보틱스 작품공모전 출품작</p>'
-      : '<p class="err">그림을 불러오지 못했어요.<br>부스 화면의 QR을 다시 찍어 주세요.</p>';
-    return;
+    show('<h1>얼굴 없는 술래</h1><p class="sub">로봇과 놀았던 추억</p>' +
+      '<p class="say">추억 그림은 부스 화면의 QR 안에 담겨 있어요.<br>한 판이 끝나면 화면에 뜨는 QR을 폰 카메라로 찍어 주세요.</p>' +
+      '<p class="foot">카메라와 마이크는 쓰지 않고, 그림은 어디에도 저장하지 않아요.<br>2026 로보틱스 작품공모전 출품작</p>');
   }
+  function render(data) {
   var FONT = '-apple-system,"Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",sans-serif';
   // 저장·공유용 카드 1080×1350
   var W = 1080, H = 1350, cv = document.createElement('canvas');
   cv.width = W; cv.height = H;
   var g = cv.getContext('2d');
-  g.fillStyle = S.COLORS.bg; g.fillRect(0, 0, W, H);
-  g.fillStyle = '#8d8b84'; g.font = '30px ' + FONT; g.fillText('얼굴 없는 술래', 64, 86);
-  g.fillStyle = '#f1efe8'; g.font = '700 60px ' + FONT; g.fillText('로봇과 놀았던 추억', 64, 154);
-  g.fillStyle = '#a8a69e'; g.font = '30px ' + FONT; g.fillText(S.subtitle(data), 64, 202);
-  g.save(); g.translate(40, 232); S.draw(g, data, W - 80, 900, { labels: true, robotLabel: '로봇 (눈높이 18cm)', font: FONT }); g.restore();
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  g.fillStyle = '#f1efe8'; g.font = '700 72px ' + FONT; g.fillText('얼굴 없는 술래', 64, 124);
+  g.fillStyle = '#e6e3da'; g.font = '500 42px ' + FONT; g.fillText('로봇과 놀았던 추억', 64, 186);
+  g.fillStyle = '#8d8b84'; g.font = '28px ' + FONT; g.fillText(S.subtitle(data), 64, 232);
+  g.save(); g.translate(0, 250); S.draw(g, data, W, 900, { minDot: 2 }); g.restore();
   g.fillStyle = '#f1efe8'; g.font = '500 38px ' + FONT; g.fillText('“얼굴은 몰라도, 당신의 발걸음은 기억할게요.”', 64, 1218);
   g.fillStyle = '#8d8b84'; g.font = '26px ' + FONT; g.fillText('로봇의 눈높이에서 우리는 모두 같은 두 개의 점이다', 64, 1278);
   var png = cv.toDataURL('image/png');
@@ -473,15 +749,16 @@ window.addEventListener('hashchange', function () { location.reload(); });
     cv.toBlob(function (blob) {
       var file = blob && typeof File === 'function' ? new File([blob], name, { type: 'image/png' }) : null;
       if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: '로봇과 놀았던 추억' }).catch(function () {});
+        navigator.share({ files: [file], title: '얼굴 없는 술래 — 로봇과 놀았던 추억' }).catch(function () {});
       } else if (navigator.share) {
-        navigator.share({ title: '로봇과 놀았던 추억', url: location.href }).catch(function () {});
+        navigator.share({ title: '얼굴 없는 술래 — 로봇과 놀았던 추억', url: location.href }).catch(function () {});
       } else if (navigator.clipboard) {
         navigator.clipboard.writeText(location.href).then(function () { document.getElementById('hint').textContent = '링크를 복사했어요.'; });
       }
     }, 'image/png');
   });
   if (!/iPhone|iPad/.test(navigator.userAgent)) document.getElementById('hint').textContent = '';
+  }
 })();
 </script>
 </body>
