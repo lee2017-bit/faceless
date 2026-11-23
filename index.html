@@ -745,19 +745,21 @@ window.addEventListener('hashchange', function () { location.reload(); });
   var name = '얼굴없는술래_' + data.date + (data.round ? '_' + data.round : '') + '.png';
   document.getElementById('save').download = name;
 
-  document.getElementById('share').addEventListener('click', function () {
-    cv.toBlob(function (blob) {
-      var file = blob && typeof File === 'function' ? new File([blob], name, { type: 'image/png' }) : null;
-      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
-        navigator.share({ files: [file], title: '얼굴 없는 술래 — 로봇과 놀았던 추억' }).catch(function () {});
-      } else if (navigator.share) {
-        navigator.share({ title: '얼굴 없는 술래 — 로봇과 놀았던 추억', url: location.href }).catch(function () {});
-      } else if (navigator.clipboard) {
-        navigator.clipboard.writeText(location.href).then(function () { document.getElementById('hint').textContent = '링크를 복사했어요.'; });
-      }
-    }, 'image/png');
+  // 폰 공유 창은 누른 순간 바로 열어야 하므로 그림 파일을 미리 만들어 둔다
+  var file = null;
+  cv.toBlob(function (blob) { if (blob && typeof File === 'function') file = new File([blob], name, { type: 'image/png' }); }, 'image/png');
+  function canShareFile() { try { return !!(file && navigator.canShare && navigator.canShare({ files: [file] })); } catch (e) { return false; } }
+  var IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  // 아이폰(Safari·Chrome): 내려받기(파일 앱으로 감) 대신 공유 창을 연다 → '이미지 저장'을 누르면 사진 앱에 들어간다
+  document.getElementById('save').addEventListener('click', function (e) {
+    if (IOS && canShareFile()) { e.preventDefault(); navigator.share({ files: [file] }).catch(function () {}); }
   });
-  if (!/iPhone|iPad/.test(navigator.userAgent)) document.getElementById('hint').textContent = '';
+  document.getElementById('share').addEventListener('click', function () {
+    if (canShareFile()) navigator.share({ files: [file] }).catch(function () {});
+    else if (navigator.share) navigator.share({ title: '얼굴 없는 술래 — 로봇과 놀았던 추억', url: location.href }).catch(function () {});
+    else if (navigator.clipboard) navigator.clipboard.writeText(location.href).then(function () { document.getElementById('hint').textContent = '링크를 복사했어요.'; });
+  });
+  document.getElementById('hint').textContent = IOS ? '아이폰은 [이미지 저장] → 공유 창의 \'이미지 저장\'을 누르면 사진 앱에 들어가요. 그림을 길게 눌러도 돼요.' : '';
   }
 })();
 </script>
