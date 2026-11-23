@@ -444,7 +444,7 @@
  * 한 판 동안 LiDAR가 본 실제 점(다리 앞면)을 모아, 3cm 칸으로 줄이고 deflate로 눌러 주소의 # 뒤(v2.)에 담는다.
  * 서버에는 아무것도 저장하지 않는다. 그리기는 art.html과 같다:
  *   검은 바탕, 빈 방 윤곽(옅은 점), 움직인 동안의 점은 시간에 따라 호박색 → 붉은색 → 보라 → 하늘색으로 겹쳐 쌓이고,
- *   돌아본 동안 서 있던 발은 흰 점, 걸린 순간은 빨간 고리, 잡은 순간은 로봇 둘레 40cm 금빛 원.
+ *   돌아본 동안 서 있던 발은 흰 점, 걸린 순간은 붉게 번지는 빛. 원이나 고리는 그리지 않는다.
  *
  * 좌표: core.js와 같다(미터, x + = 로봇 왼쪽, y + = 로봇 정면).
  * 필요: core.js를 먼저 불러온다. 압축은 브라우저 CompressionStream('deflate-raw')을 쓴다(iOS 16.4+, Chrome 103+).
@@ -632,70 +632,91 @@
   }
 
   // ---------- 그리기 (art.html과 같은 방식) ----------
+  // 모든 표시를 선 없이 '빛'으로: 점은 그대로 쌓고, 걸린 순간은 붉게 번지는 빛, 로봇은 작은 빛 한 점(원·고리는 그리지 않는다).
+  // 마지막에 그림 전체를 흐리게 겹쳐(블룸) 빛이 번져 보이게 한다.
   function drawArt(ctx, data, w, h, opts) {
     opts = opts || {};
     var unit = data.unit || 0.01, xs = [0], ys = [0];
     data.c.concat(data.w).forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
     function pct(v, q) { var s = v.slice().sort(function (a, b) { return a - b; }); return s[Math.min(s.length - 1, Math.floor(s.length * q))]; }
-    var x0 = Math.min(0, pct(xs, 0.02)), x1 = Math.max(0, pct(xs, 0.98)), y0 = Math.min(0, pct(ys, 0.02)), y1 = Math.max(0, pct(ys, 0.98));
+    // 로봇의 빛이 잘리지 않게 로봇 주변 0.3m도 넣는다
+    var x0 = Math.min(-0.3, pct(xs, 0.02)), x1 = Math.max(0.3, pct(xs, 0.98)), y0 = Math.min(-0.3, pct(ys, 0.02)), y1 = Math.max(0.3, pct(ys, 0.98));
     var ww = Math.max(1.5, x1 - x0), hh = Math.max(1.5, y1 - y0);
-    var s = Math.min(w * 0.8 / ww, h * 0.74 / hh);
+    var s = Math.min(w * 0.84 / ww, h * 0.84 / hh);
     var cx = w / 2 + (x0 + x1) / 2 * s, cy = h / 2 + (y0 + y1) / 2 * s;
     function P(x, y) { return [cx - x * s, cy - y * s]; }
     var rp = Math.max(opts.minDot || 1.3, s * 0.009);
     var rnd = rng(data.c.length * 31 + data.w.length * 7 + (data.round || 0));
-    function dot(x, y, r) { var p = P(x, y); ctx.moveTo(p[0] + r, p[1]); ctx.arc(p[0], p[1], r, 0, Math.PI * 2); }
+
+    // 화면 배율(dpr)에 맞춘 별도 캔버스에 그린 뒤, 흐린 사본을 겹쳐 빛 번짐을 만든다
+    var tr = ctx.getTransform ? ctx.getTransform() : null, k = tr ? Math.max(1, Math.abs(tr.a)) : 1;
+    var doc = root.document, off = doc.createElement('canvas');
+    off.width = Math.max(1, Math.round(w * k)); off.height = Math.max(1, Math.round(h * k));
+    var g = off.getContext('2d'); g.scale(k, k);
+    function dot(x, y, r) { var p = P(x, y); g.moveTo(p[0] + r, p[1]); g.arc(p[0], p[1], r, 0, Math.PI * 2); }
     // 칸 안에 점을 흩뿌릴 때: LiDAR 점은 같은 거리·이웃 각도라 로봇에서 본 옆 방향(접선)으로 늘어선다
     function spread(x, y, r) {
       var d = Math.sqrt(x * x + y * y) || 1, tx = -y / d, ty = x / d, a = (rnd() - 0.5) * unit * 1.4, b = (rnd() - 0.5) * unit * 0.9;
       dot(x + tx * a + x / d * b, y + ty * a + y / d * b, r);
     }
+    function glow(x, y, rad, col, al) {
+      var p = P(x, y), gr = g.createRadialGradient(p[0], p[1], 0, p[0], p[1], rad);
+      gr.addColorStop(0, 'rgba(' + col + ',' + al + ')'); gr.addColorStop(0.45, 'rgba(' + col + ',' + (al * 0.35).toFixed(3) + ')'); gr.addColorStop(1, 'rgba(' + col + ',0)');
+      g.fillStyle = gr; g.beginPath(); g.arc(p[0], p[1], rad, 0, Math.PI * 2); g.fill();
+    }
 
-    ctx.save();
-    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h);
+    g.fillStyle = '#000'; g.fillRect(0, 0, w, h);
     // 로봇이 아는 빈 방의 윤곽: 1°마다 옅은 점 (간격 사이는 이어 채운다)
     var st = data.wallStep || 1, wr = data.wallR || [];
-    ctx.fillStyle = 'rgba(241,239,232,0.16)'; ctx.beginPath();
-    for (var k = 0; k < wr.length; k++) {
-      var r1 = wr[k], r2 = wr[(k + 1) % wr.length];
+    g.fillStyle = 'rgba(241,239,232,0.14)'; g.beginPath();
+    for (var q = 0; q < wr.length; q++) {
+      var r1 = wr[q], r2 = wr[(q + 1) % wr.length];
       if (!(r1 > 0)) continue;
       for (var j = 0; j < st; j++) {
         if (j > 0 && !(r2 > 0 && Math.abs(r2 - r1) < 0.25)) break;
-        var r = r1 + (r2 - r1) * j / st, a = (k * st + (st - 1) / 2 + j) * Math.PI / 180;
-        dot(r * Math.sin(a), r * Math.cos(a), rp * 0.6);
+        var rr0 = r1 + (r2 - r1) * j / st, an = (q * st + (st - 1) / 2 + j) * Math.PI / 180;
+        dot(rr0 * Math.sin(an), rr0 * Math.cos(an), rp * 0.55);
       }
     }
-    ctx.fill();
+    g.fill();
+
+    g.globalCompositeOperation = 'lighter';
     // 움직인 동안의 점: 시간에 따라 색, 겹칠수록 밝게
-    ctx.globalCompositeOperation = 'lighter';
     data.c.forEach(function (p) {
       var m = Math.max(1, Math.min(4, Math.round(p[2] / 3))), al = Math.min(0.95, 0.11 * p[2] / m);
-      ctx.fillStyle = 'hsla(' + Math.round(hue(p[3])) + ',90%,60%,' + al.toFixed(3) + ')';
-      ctx.beginPath();
-      for (var i = 0; i < m; i++) spread(p[0], p[1], rp);
-      ctx.fill();
+      g.fillStyle = 'hsla(' + Math.round(hue(p[3])) + ',90%,60%,' + al.toFixed(3) + ')';
+      g.beginPath(); for (var i = 0; i < m; i++) spread(p[0], p[1], rp); g.fill();
     });
     // 돌아본 동안 서 있던 발: 흰 점
     data.w.forEach(function (p) {
       var m = Math.max(1, Math.min(4, Math.round(p[2] / 3))), al = Math.min(0.95, 0.06 * p[2] / m);
-      ctx.fillStyle = 'rgba(255,255,255,' + al.toFixed(3) + ')';
-      ctx.beginPath();
-      for (var i = 0; i < m; i++) spread(p[0], p[1], rp * 1.1);
-      ctx.fill();
+      g.fillStyle = 'rgba(255,255,255,' + al.toFixed(3) + ')';
+      g.beginPath(); for (var i = 0; i < m; i++) spread(p[0], p[1], rp * 1.1); g.fill();
     });
-    ctx.globalCompositeOperation = 'source-over';
-    // 걸린 순간: 그때 보인 점마다 빨간 고리
-    ctx.strokeStyle = 'rgba(255,72,60,0.9)'; ctx.lineWidth = Math.max(1, rp * 0.7);
+    // 걸린 순간: 그 발이 붉게 타오르듯 번지는 빛 + 붉은 점
     (data.rings || []).forEach(function (ps) {
-      ps.forEach(function (q) { var p = P(q[0], q[1]); ctx.beginPath(); ctx.arc(p[0], p[1], rp * 4, 0, Math.PI * 2); ctx.stroke(); });
+      if (!ps.length) return;
+      var mx = 0, my = 0; ps.forEach(function (p) { mx += p[0]; my += p[1]; }); mx /= ps.length; my /= ps.length;
+      glow(mx, my, 0.22 * s, '255,58,72', 0.32);
+      ps.forEach(function (p) { glow(p[0], p[1], rp * 5, '255,90,90', 0.30); });
+      g.fillStyle = 'rgba(255,120,110,0.85)'; g.beginPath(); ps.forEach(function (p) { spread(p[0], p[1], rp * 1.1); }); g.fill();
     });
-    // 잡은 순간: 로봇 둘레 40cm 금빛 원
-    if (data.won) { ctx.strokeStyle = 'rgba(255,196,80,0.9)'; ctx.lineWidth = Math.max(1.5, rp); ctx.beginPath(); ctx.arc(cx, cy, 0.40 * s, 0, Math.PI * 2); ctx.stroke(); }
-    // 로봇 (정면 표시)
-    var rr = Math.max(4, rp * 2.8);
-    ctx.strokeStyle = 'rgba(241,239,232,0.7)'; ctx.lineWidth = Math.max(1.2, rp * 0.8);
-    ctx.beginPath(); ctx.arc(cx, cy, rr, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(cx, cy - rr * 1.6); ctx.lineTo(cx, cy - rr * 2.8); ctx.stroke();
+    // 로봇: 작은 빛 한 점
+    var pr = P(0, 0);
+    glow(0, 0, Math.max(10, rp * 9), '241,239,232', 0.55);
+    g.fillStyle = 'rgba(255,255,255,0.95)'; g.beginPath(); g.arc(pr[0], pr[1], Math.max(1.6, rp * 1.3), 0, Math.PI * 2); g.fill();
+    g.globalCompositeOperation = 'source-over';
+
+    // 블룸: 줄인 사본 두 장(1/5, 1/14)을 다시 키워 빛처럼 겹친다
+    ctx.save();
+    ctx.drawImage(off, 0, 0, w, h);
+    ctx.globalCompositeOperation = 'lighter';
+    [[5, 0.45], [14, 0.35]].forEach(function (b) {
+      var sm = doc.createElement('canvas');
+      sm.width = Math.max(1, Math.round(off.width / b[0])); sm.height = Math.max(1, Math.round(off.height / b[0]));
+      var sg = sm.getContext('2d'); sg.imageSmoothingEnabled = true; sg.drawImage(off, 0, 0, sm.width, sm.height);
+      ctx.globalAlpha = b[1]; ctx.imageSmoothingEnabled = true; ctx.drawImage(sm, 0, 0, w, h);
+    });
     ctx.restore();
   }
 
